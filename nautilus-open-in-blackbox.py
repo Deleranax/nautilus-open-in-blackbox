@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+import shlex
 import shutil
 import subprocess
 import urllib.parse
@@ -19,6 +20,7 @@ from gi.repository import GObject, Nautilus
 if os.environ.get("NAUTILUS_BLACKBOX_DEBUG", "False") == "True":
     logging.basicConfig(level=logging.DEBUG)
 
+REMOTE_URI_SCHEME = ["ftp", "sftp"]
 
 class BlackBoxNautilus(GObject.GObject, Nautilus.MenuProvider):
     def __init__(self):
@@ -38,11 +40,13 @@ class BlackBoxNautilus(GObject.GObject, Nautilus.MenuProvider):
         if fileInfo.is_directory():
             self.is_select = True
             dir_path = self.get_abs_path(fileInfo)
-
-            logging.debug("Selecting a directory!!")
-            logging.debug(f"Create a menu item for entry {dir_path}")
-            menu_item = self._create_nautilus_item(dir_path)
-            menu.append(menu_item)
+            
+            if fileInfo.get_uri_scheme() in REMOTE_URI_SCHEME:
+                menu_item = self._create_remote_nautilus_item(dir_path)
+                menu.append(menu_item)
+            else:
+                menu_item = self._create_nautilus_item(dir_path)
+                menu.append(menu_item)
 
         return menu
 
@@ -55,15 +59,18 @@ class BlackBoxNautilus(GObject.GObject, Nautilus.MenuProvider):
         if self.is_select:
             self.is_select = False
             return []
-
+            
         menu = []
+        
         if directory.is_directory():
             dir_path = self.get_abs_path(directory)
-
-            logging.debug("Not thing is selected. Launch from backgrounds!!")
-            logging.debug(f"Create a menu item for entry {dir_path}")
-            menu_item = self._create_nautilus_item(dir_path)
-            menu.append(menu_item)
+            
+            if directory.get_uri_scheme() in REMOTE_URI_SCHEME:
+                menu_item = self._create_remote_nautilus_item(dir_path)
+                menu.append(menu_item)
+            else:
+                menu_item = self._create_nautilus_item(dir_path)
+                menu.append(menu_item)
 
         return menu
 
@@ -72,13 +79,24 @@ class BlackBoxNautilus(GObject.GObject, Nautilus.MenuProvider):
 
         item = Nautilus.MenuItem(
             name="BlackBoxNautilus::open_in_blackbox",
-            label=gettext("Open in Black Box"),
-            tip=gettext("Open this folder/file in Black Box Terminal"),
+            label=gettext("Ouvrir dans Boîte Noire"),
+            tip=gettext("Ouvrir le fichier/dossier dans Boîte Noire"),
         )
-        logging.debug(f"Created item with path {dir_path}")
 
         item.connect("activate", self._nautilus_run, dir_path)
-        logging.debug("Connect trigger to menu item")
+
+        return item
+        
+    def _create_remote_nautilus_item(self, dir_path: str) -> Nautilus.MenuItem:
+        """Creates the 'Open Remote In Black Box' menu item."""
+
+        item = Nautilus.MenuItem(
+            name="BlackBoxNautilus::open_remote_in_blackbox",
+            label=gettext("Ouvrir à distance dans Boîte Noire"),
+            tip=gettext("Ouvrir à distance le fichier/dossier dans Boîte Noire"),
+        )
+
+        item.connect("activate", self._nautilus_run, dir_path)
 
         return item
 
@@ -90,16 +108,34 @@ class BlackBoxNautilus(GObject.GObject, Nautilus.MenuProvider):
 
     def _nautilus_run(self, menu, path):
         """'Open with Black Box 's menu item callback."""
-        logging.debug("Openning:", path)
         args = None
+            
         if self.is_native()=="blackbox-terminal":
-            args = ["blackbox-terminal", "-w", path]
+            args = ["blackbox-terminal"]
         elif self.is_native()=="blackbox":
-            args = ["blackbox", "-w", path]
+            args = ["blackbox"]
         else:
-            args = ["/usr/bin/flatpak", "run", TERMINAL_NAME, "-w", path]
+            args = ["/usr/bin/flatpak", "run", TERMINAL_NAME]
+            
+        result = urllib.parse.urlparse(path)
+        if result.scheme in REMOTE_URI_SCHEME:
+            cmd = ["ssh", "-t"]
+            if result.username:
+                cmd.append(f"{result.username}@{result.hostname}")
+            else:
+                cmd.append(result.hostname)
 
-        subprocess.Popen(args, cwd=path)
+            if result.port:
+                cmd.append("-p")
+                cmd.append(str(result.port))
+
+            cmd.append(shlex.quote("cd " + shlex.quote(urllib.parse.unquote(result.path)) + " ; $SHELL"))
+            
+            args.extend(["-c", " ".join(cmd)])
+            subprocess.Popen(args)
+        else:
+            args.extend(["-w", path])
+            subprocess.Popen(args, cwd=path)
 
     def get_abs_path(self, fileInfo: Nautilus.FileInfo):
         uri = fileInfo.get_uri()
